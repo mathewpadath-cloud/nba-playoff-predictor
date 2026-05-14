@@ -186,6 +186,39 @@ def interactive_mode(team_stats: pd.DataFrame, model):
     result = predict(home, away, team_stats, model, home_rest, away_rest)
     print_result(result)
 
+def get_live_stats(team_abbrev):
+    """Pull current 2025-26 playoff stats for a team from NBA API."""
+    from nba_api.stats.endpoints import teamdashboardbygeneralsplits
+    from nba_api.stats.static import teams as nba_teams
+    import time
+
+    all_teams = nba_teams.get_teams()
+    lookup = {t['abbreviation'].upper(): t['id'] for t in all_teams}
+    
+    abbrev = team_abbrev.upper()
+    if abbrev not in lookup:
+        print(f"❌  Unknown team: {team_abbrev}")
+        sys.exit(1)
+    
+    time.sleep(1)
+    df = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
+        team_id=lookup[abbrev],
+        season='2025-26',
+        season_type_all_star='Playoffs',
+        measure_type_detailed_defense='Advanced',
+        timeout=60
+    ).get_data_frames()[0]
+
+    if df.empty:
+        print(f"❌  No 2025-26 playoff data found for {team_abbrev}")
+        sys.exit(1)
+
+    return {
+        'off_rtg': float(df['OFF_RATING'].iloc[0]),
+        'def_rtg': float(df['DEF_RATING'].iloc[0]),
+        'pace':    float(df['PACE'].iloc[0]),
+        'form_l10': 0.0,
+    }
 
 # ── Main ───────────────────────────────────────────────────────────────────
 def main():
@@ -200,6 +233,8 @@ def main():
                         help='Home team rest days before game (default: 2)')
     parser.add_argument('--away-rest', type=int, default=2, metavar='N',
                         help='Away team rest days before game (default: 2)')
+    parser.add_argument('--live', action='store_true',
+                        help='Pull live 2025-26 stats from NBA API instead of historical averages')
     parser.add_argument('--list-teams', action='store_true',
                         help='List all available team abbreviations and exit')
 
@@ -218,8 +253,22 @@ def main():
         sys.exit(0)
 
     if args.home and args.away:
-        result = predict(args.home, args.away, team_stats, model,
-                         args.home_rest, args.away_rest)
+        if args.live:
+            print("Fetching live 2025-26 stats...")
+            home_stats_live = get_live_stats(args.home)
+            away_stats_live = get_live_stats(args.away)
+            live_df = pd.DataFrame([{**{f'home_{k}': v for k, v in home_stats_live.items()},
+                                      **{f'away_{k}': v for k, v in away_stats_live.items()}}])
+            live_team_stats = pd.DataFrame({
+                args.home.upper(): home_stats_live,
+                args.away.upper(): away_stats_live,
+            }).T
+            live_team_stats.index.name = None
+            result = predict(args.home, args.away, live_team_stats, model,
+                             args.home_rest, args.away_rest)
+        else:
+            result = predict(args.home, args.away, team_stats, model,
+                             args.home_rest, args.away_rest)
         print_result(result)
     else:
         interactive_mode(team_stats, model)
